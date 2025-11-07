@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Scope color fixes ONLY to sections you marked as .dark-section */
+.dark-section { color: #f8fafc; }
+
+.dark-section :is(.text-gray-600,.text-gray-700,.text-gray-800,.text-gray-900) {
+  color: #f8fafc !important;
+}
+.dark-section :is(.text-gray-400,.text-gray-500) {
+  color: #cbd5e1 !important;
+}
+
+/* Safety: if a white/light card ever appears inside a dark section */
+.dark-section :is(.bg-white,.bg-gray-50,.bg-slate-50) {
+  color: #0f172a !important;
+}
