@@ -1,5 +1,5 @@
-import io
 import os
+import io
 import json
 import base64
 import datetime
@@ -10,34 +10,30 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Response, Body, Qu
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+# -------------------------------------------------
+# Create the app FIRST
+# -------------------------------------------------
+app = FastAPI(title="Missing 945 API", version="1.2.0")
 
-
-
-# -----------------------------------------------------------------------------
-# FastAPI + CORS
-# -----------------------------------------------------------------------------
-
-app = FastAPI(title="Missing 945 API", version="1.1.1")
-
+# (Optional) Lambda adapter – safe to leave in
 if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
     from mangum import Mangum
     handler = Mangum(app)
 
+# -------------------------------------------------
+# CORS (env-driven)
+# -------------------------------------------------
 def _csv_env(name: str, default: str = "") -> list[str]:
     return [o.strip() for o in os.getenv(name, default).split(",") if o.strip()]
 
-ALLOWED_ORIGINS = _csv_env(
-    "ALLOWED_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173"
-)
-
-ALLOW_ORIGIN_REGEX = os.getenv("ALLOW_ORIGIN_REGEX", "") or None
+ALLOWED_ORIGINS = _csv_env("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+ALLOW_ORIGIN_REGEX = os.getenv("ALLOW_ORIGIN_REGEX") or None
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS if not ALLOW_ORIGIN_REGEX else [],
     allow_origin_regex=ALLOW_ORIGIN_REGEX,
-    allow_credentials=False,           
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
