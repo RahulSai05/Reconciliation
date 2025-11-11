@@ -23,7 +23,7 @@ if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
 # -------------------------------------------------
 # CORS (env-driven)
 # -------------------------------------------------
-def _csv_env(name: str, default: str = "") -> list[str]:
+def _csv_env(name: str, default: str = "") -> List[str]:
     return [o.strip() for o in os.getenv(name, default).split(",") if o.strip()]
 
 ALLOWED_ORIGINS = _csv_env("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
