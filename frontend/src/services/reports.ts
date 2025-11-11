@@ -7,7 +7,7 @@ export type Snapshot = {
 };
 
 const API_BASE =
-  import.meta.env.VITE_API_BASE ??
+  import.meta.env.VITE_API_BASE_LAMBDA ??
   "https://ax37hcnoga.execute-api.us-east-1.amazonaws.com/prod";
 
 export async function saveSnapshotAPI(payload: Snapshot) {

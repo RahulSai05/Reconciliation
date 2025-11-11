@@ -51,7 +51,7 @@ export default function DeliveryConfirmationPage() {
     setDeliveryXlsxB64(null);
   
     try {
-      const base = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+      const base = import.meta.env.VITE_API_BASE_FASTAPI || "http://localhost:8000";
       const url = `${base}/delivery-confirmation?limit=10000`;
   
       const fd = new FormData();

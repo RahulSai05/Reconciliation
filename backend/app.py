@@ -16,20 +16,28 @@ from fastapi.responses import StreamingResponse
 # -----------------------------------------------------------------------------
 # FastAPI + CORS
 # -----------------------------------------------------------------------------
+
 app = FastAPI(title="Missing 945 API", version="1.1.1")
 
 if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
     from mangum import Mangum
     handler = Mangum(app)
-    
-ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+
+def _csv_env(name: str, default: str = "") -> list[str]:
+    return [o.strip() for o in os.getenv(name, default).split(",") if o.strip()]
+
+ALLOWED_ORIGINS = _csv_env(
+    "ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173"
+)
+
+ALLOW_ORIGIN_REGEX = os.getenv("ALLOW_ORIGIN_REGEX", "") or None
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,
+    allow_origins=ALLOWED_ORIGINS if not ALLOW_ORIGIN_REGEX else [],
+    allow_origin_regex=ALLOW_ORIGIN_REGEX,
+    allow_credentials=False,           
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
@@ -125,33 +133,6 @@ def home():
     return {"message": "✅ API is live and working!"}
 
 # -----------------------------------------------------------------------------
-# Explicit preflight for older setups (optional but harmless)
-# -----------------------------------------------------------------------------
-@app.options("/ship-confirmation-reconciliation")
-def options_ship():
-    return Response(
-        status_code=204,
-        headers={
-            "Access-Control-Allow-Origin": ALLOWED_ORIGINS[0],
-            "Access-Control-Allow-Methods": "POST,OPTIONS",
-            "Access-Control-Allow-Headers": "content-type",
-            "Access-Control-Expose-Headers": "Content-Disposition",
-        },
-    )
-
-@app.options("/delivery-confirmation")
-def options_delivery():
-    return Response(
-        status_code=204,
-        headers={
-            "Access-Control-Allow-Origin": ALLOWED_ORIGINS[0],
-            "Access-Control-Allow-Methods": "POST,OPTIONS",
-            "Access-Control-Allow-Headers": "content-type",
-            "Access-Control-Expose-Headers": "Content-Disposition",
-        },
-    )
-
-# -----------------------------------------------------------------------------
 # Ship Confirmation Reconciliation (existing)
 # -----------------------------------------------------------------------------
 @app.post("/ship-confirmation-reconciliation")
@@ -220,14 +201,13 @@ async def reconcile(
     filename = f"MISSING_945_{stamp}.xlsx"
 
     return StreamingResponse(
-        io.BytesIO(data),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Access-Control-Allow-Origin": ALLOWED_ORIGINS[0],
-            "Access-Control-Expose-Headers": "Content-Disposition",
-        }
-    )
+    io.BytesIO(data),
+    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    headers={
+        "Content-Disposition": f'attachment; filename="{filename}"'
+    }
+)
+
 
 # -----------------------------------------------------------------------------
 # Delivery Confirmation – returns JSON summary + base64 Excel (NaN-safe)
@@ -357,20 +337,6 @@ async def recent_reports(days: int = Query(7, ge=1, le=90)):
     filtered = [it for it in items if parse_date(it.get("snapshotDate", "")) >= cutoff]
     filtered.sort(key=lambda it: it.get("snapshotDate", ""))
     return filtered
-
-
-@app.options("/no-sonum")
-def options_no_sonum():
-    return Response(
-        status_code=204,
-        headers={
-            "Access-Control-Allow-Origin": ALLOWED_ORIGINS[0],
-            "Access-Control-Allow-Methods": "POST,OPTIONS",
-            "Access-Control-Allow-Headers": "content-type",
-            "Access-Control-Expose-Headers": "Content-Disposition",
-        },
-    )
-
 
 # -----------------------------------------------------------------------------
 # NO_SONUM – detect delivery-confirmed by 3PL but NOT ship-confirmed in AX
