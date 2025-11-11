@@ -1,4 +1,4 @@
-import { useState, useRef, DragEvent } from 'react';
+import { useState, useRef, DragEvent, useId } from 'react';
 import { Upload } from 'lucide-react';
 
 interface FileUploaderProps {
@@ -18,20 +18,18 @@ export default function FileUploader({
 }: FileUploaderProps) {
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
-
-  // when user clicks the drop zone, trigger hidden input
-  const handleClick = () => {
-    inputRef.current?.click();
-  };
+  const inputId = useId();
 
   // when user picks file using the file picker dialog
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0] || null;
     onChange(selectedFile);
+
+    // allow selecting the same file again (some browsers won't fire change otherwise)
+    e.target.value = '';
   };
 
   // --- DRAG & DROP HANDLERS ---
-
   const handleDragOver = (e: DragEvent<HTMLLabelElement>) => {
     e.preventDefault(); // required so onDrop will fire
     e.stopPropagation();
@@ -49,15 +47,12 @@ export default function FileUploader({
     e.stopPropagation();
     setIsDragging(false);
 
-    // Get the first file dropped
-    const droppedFile = e.dataTransfer.files?.[0];
+    const droppedFile = e.dataTransfer.files?.[0] || null;
     if (droppedFile) {
-      // optional: if you only want CSVs, you can validate here
       onChange(droppedFile);
 
-      // also sync the hidden input so it's not "empty"
+      // sync the hidden input's FileList for form integrations
       if (inputRef.current) {
-        // create a DataTransfer to assign programmatically
         const dataTransfer = new DataTransfer();
         dataTransfer.items.add(droppedFile);
         inputRef.current.files = dataTransfer.files;
@@ -69,14 +64,15 @@ export default function FileUploader({
     <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 flex-1 min-w-[260px]">
       <div className="text-sm font-semibold text-gray-700 mb-3">{label}</div>
 
+      {/* Use htmlFor to trigger the input; no manual .click() -> prevents double dialogs */}
       <label
+        htmlFor={inputId}
         className={[
           'flex flex-col items-center justify-center border-2 border-dashed rounded-lg p-6 cursor-pointer transition-all w-full text-center',
           isDragging
             ? 'border-blue-500 bg-blue-50/70'
             : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50/50',
         ].join(' ')}
-        onClick={handleClick}
         onDragOver={handleDragOver}
         onDragEnter={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -92,13 +88,14 @@ export default function FileUploader({
         </span>
         <span className="text-[0.65rem] text-gray-400">{accept}</span>
 
-        {/* Hidden native file input */}
+        {/* Visually hidden (not display:none) so label works across browsers */}
         <input
+          id={inputId}
           ref={inputRef}
           type="file"
           accept={accept}
           onChange={handleFileChange}
-          className="hidden"
+          className="sr-only"
         />
       </label>
 
