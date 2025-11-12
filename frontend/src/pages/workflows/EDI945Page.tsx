@@ -309,7 +309,7 @@ export default function EDI945Page({ timestamp }: { timestamp: string }) {
       <div className="flex items-start justify-between gap-6">
         <div>
           <h2 className="text-3xl font-bold text-gray-900 mb-2 tracking-tight">
-            Executive Revenue Protection Dashboard
+            Ship Confirmation Reconciliation
           </h2>
           <p className="text-base text-gray-600 mb-1">
             Real-time monitoring of shipped-but-not-booked revenue, SLA exposure, and operational accountability.
