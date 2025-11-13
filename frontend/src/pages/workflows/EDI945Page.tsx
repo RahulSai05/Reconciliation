@@ -314,7 +314,7 @@ export default function EDI945Page({ timestamp }: { timestamp: string }) {
           <p className="text-base text-gray-600 mb-1">
             Real-time monitoring of shipped-but-not-booked revenue, SLA exposure, and operational accountability.
           </p>
-          <div className="flex items-center gap-4 mt-3">
+          {/* <div className="flex items-center gap-4 mt-3">
             <span className="text-xs text-gray-400 flex items-center gap-2">
               <Zap className="w-3 h-3" />
               Live Data: DHL Scans · B2Bi EDI · AX Posting
@@ -330,7 +330,7 @@ export default function EDI945Page({ timestamp }: { timestamp: string }) {
               <RefreshCw className={`w-3 h-3 inline mr-1 ${autoRefresh ? 'animate-spin' : ''}`} />
               Auto-refresh {autoRefresh ? 'ON' : 'OFF'}
             </button>
-          </div>
+          </div> */}
         </div>
 
         {result && (
@@ -370,7 +370,7 @@ export default function EDI945Page({ timestamp }: { timestamp: string }) {
         </div>
       </Section>
 
-      <InfoBox>
+      {/* <InfoBox>
         <div className="space-y-2">
           <div className="font-semibold text-blue-900 text-base mb-3">Why This Matters to Leadership</div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
@@ -380,7 +380,7 @@ export default function EDI945Page({ timestamp }: { timestamp: string }) {
             <div><span className="font-semibold">Operational Excellence:</span> Automated detection and routing reduces manual VLOOKUP work by 95%+.</div>
           </div>
         </div>
-      </InfoBox>
+      </InfoBox> */}
 
       {result && (
         <>

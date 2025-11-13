@@ -8,7 +8,7 @@ export default function Navbar({ timestamp }: NavbarProps) {
       <div className="flex items-center justify-between">
         <div className="flex items-baseline gap-8">
           <h1 className="text-base font-semibold text-gray-900">
-            Tempur-Pedic Reconciliation
+             Reconciliation Dashboards
           </h1>
           <div className="flex gap-6 text-sm font-medium">
             <span className="text-gray-900 border-b-2 border-blue-500 pb-2">

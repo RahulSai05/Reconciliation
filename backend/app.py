@@ -335,249 +335,129 @@ async def recent_reports(days: int = Query(7, ge=1, le=90)):
     return filtered
 
 # -----------------------------------------------------------------------------
-# NO_SONUM – detect delivery-confirmed by 3PL but NOT ship-confirmed in AX
+# NO_SONUM / NO_SO reconciliation (final)
 # -----------------------------------------------------------------------------
-@app.post("/no-sonum")
-async def no_sonum(
-    shipment_history: UploadFile = File(..., description="Shipment_History (DHL 945 history, e.g. Shipment_History___Total-*.csv)"),
-    edib2bi: UploadFile = File(..., description="EDIB2Bi report (must include 'Sales Order Number' or 'SalesOrderNumber1')"),
-    edi940cost: UploadFile = File(..., description="EDI940Report_withCostV2.* (must include 'PickRoute' + AX status fields)"),
-    limit: int = Query(1000, ge=1, le=10000),
+@app.post("/no-sonum-reconciliation")
+async def no_sonum_reconciliation(
+    ax_header: UploadFile = File(..., description="AX Sales/Pick header CSV (e.g., EDI940Report_withCostV2.0*.csv)"),
+    d1_legs: UploadFile = File(..., description="D1 / Legs CSV (e.g., TPX_-_AX_D1_Report-*.csv)"),
+    edi214: UploadFile = File(..., description="EDI 214 / Exceptions CSV (e.g., EDIB2BiReportV2*.csv)"),
 ):
-    """
-    Logic:
-    - From B2Bi, keep rows where Sales Order Number == 'NO_SONUM' (case-insensitive).
-    - Try to link those rows to DHL Shipment History and EDI940 Cost via Pickticket/PickRoute/AXReferenceID/ShipmentID.
-    - Classify likely reason:
-        1) No DHL scan found => "3PL never shipped"
-        2) DHL shows shipped but B2Bi indicates no/failed 945 send/transmission => "3PL shipped but did not send 945 or transmission failed"
-        3) DHL shows shipped and B2Bi shows 945 reached B2Bi but failed in TSI/AX => "File failed in TSI EDI"
-    Returns:
-        - summary (counts)
-        - rows (sample up to ?limit)
-        - xlsx_b64 (full Excel)
-        - filename
-    """
-    try:
-        # Load CSVs
-        dhl = load_csv_bytes(await shipment_history.read())
-        b2b = load_csv_bytes(await edib2bi.read())
-        cost = load_csv_bytes(await edi940cost.read())
-
-        # Normalize
-        for df in (dhl, b2b, cost):
-            df.columns = df.columns.astype(str).str.strip()
-
-        # --- Column picks (case-insensitive via get_col) ---
-        # DHL / Shipment History (we mainly use Pickticket as the join key)
-        dhl_pick = get_col(dhl, "Pickticket") if "Pickticket".lower() in {c.lower() for c in dhl.columns} else get_col(dhl, "Pickticketnumber") if "Pickticketnumber".lower() in {c.lower() for c in dhl.columns} else get_col(dhl, "Pick Ticket")  # flexible variants
-        dhl_order = None
+    # ---- load (utf-8-sig strips BOM if present)
+    def _read(b: bytes) -> pd.DataFrame:
         try:
-            dhl_order = get_col(dhl, "Order")
-        except HTTPException:
-            pass  # optional
-
-        # B2Bi – must contain Sales Order Number == NO_SONUM; we also try to use AXReferenceID/ShipmentID to link
-        sonum_col = None
-        for cand in ["Sales Order Number", "SalesOrderNumber1", "SalesOrderNumber", "Sales_Order_Number"]:
-            try:
-                sonum_col = get_col(b2b, cand)
-                break
-            except HTTPException:
-                continue
-        if not sonum_col:
-            raise HTTPException(status_code=400, detail="B2Bi file missing 'Sales Order Number' column (tried several variants).")
-
-        b2b_status = None
-        for cand in ["StatusSummary", "Status Summary", "Status"]:
-            try:
-                b2b_status = get_col(b2b, cand)
-                break
-            except HTTPException:
-                continue
-
-        b2b_err = None
-        for cand in ["ERRORDESCRIPTION", "ERROR DESCRIPTION", "ErrorDescription", "Error"]:
-            try:
-                b2b_err = get_col(b2b, cand)
-                break
-            except HTTPException:
-                continue
-
-        b2b_axref = None
-        for cand in ["AXReferenceID", "AX Reference ID", "AXReferenceId"]:
-            try:
-                b2b_axref = get_col(b2b, cand)
-                break
-            except HTTPException:
-                continue
-
-        b2b_shipid = None
-        for cand in ["ShipmentID", "Shipment ID", "ShipmentId"]:
-            try:
-                b2b_shipid = get_col(b2b, cand)
-                break
-            except HTTPException:
-                continue
-
-        # EDI940 Cost: PickRoute + AX statuses help tell if AX is not ship-confirmed
-        cost_pick = get_col(cost, "PickRoute")
-        cost_hdr_status = None
-        for cand in ["SalesHeaderStatus", "Sales Header Status"]:
-            try:
-                cost_hdr_status = get_col(cost, cand)
-                break
-            except HTTPException:
-                continue
-
-        cost_doc_status = None
-        for cand in ["SalesHeaderDocStatus", "Sales Header Doc Status"]:
-            try:
-                cost_doc_status = get_col(cost, cand)
-                break
-            except HTTPException:
-                continue
-
-        # --- Filter B2Bi to NO_SONUM rows ---
-        b2b["_sonum_flag"] = b2b[sonum_col].astype(str).str.strip().str.upper() == "NO_SONUM"
-        b2b_no_sonum = b2b.loc[b2b["_sonum_flag"]].copy()
-        if b2b_no_sonum.empty:
-            # Nothing to report, return empty artifact for consistent UI
-            xlsx_bytes = df_to_xlsx_bytes(pd.DataFrame(columns=[
-                "AXReferenceID", "ShipmentID", "StatusSummary", "ERRORDESCRIPTION",
-                "Pickticket", "PickRoute", "AX_SalesHeaderStatus", "AX_SalesHeaderDocStatus",
-                "ReasonCategory", "ReasonDetail"
-            ]), sheet_name="NO_SONUM")
-            xlsx_b64 = base64.b64encode(xlsx_bytes).decode("ascii")
-            filename = f"NO_SONUM_{datetime.datetime.now().date().isoformat()}.xlsx"
-            return {
-                "summary": {
-                    "total_b2bi_rows": int(len(b2b)),
-                    "no_sonum_rows": 0,
-                    "matched_to_dhl": 0,
-                    "matched_to_940": 0,
-                    "reason_never_shipped": 0,
-                    "reason_no_945_or_txn_fail": 0,
-                    "reason_failed_tsi": 0,
-                },
-                "rows": [],
-                "xlsx_b64": xlsx_b64,
-                "filename": filename,
-            }
-
-        # Build join keys
-        # From B2Bi, best pick key order: AXReferenceID (if present) -> ShipmentID (fallback)
-        b2b_no_sonum["__b2b_key"] = (
-            b2b_no_sonum[b2b_axref].astype(str)
-            if b2b_axref else b2b_no_sonum[b2b_shipid].astype(str)
+            df = pd.read_csv(io.BytesIO(b), dtype=str, encoding="utf-8-sig")
+        except Exception:
+            df = pd.read_csv(io.BytesIO(b), dtype=str, encoding="latin-1")
+        # normalize headers
+        df.columns = (
+            df.columns.astype(str)
+            .str.strip()
+            .str.replace(r"^\ufeff|^ÿ", "", regex=True)
         )
-        b2b_no_sonum["__b2b_key"] = b2b_no_sonum["__b2b_key"].str.strip().str.lower()
+        return df
 
-        # DHL join: try Pickticket vs __b2b_key
-        dhl_tmp = dhl[[dhl_pick]].copy()
-        dhl_tmp["__dhl_key"] = dhl_tmp[dhl_pick].astype(str).str.strip().str.lower()
+    ax_df  = _read(await ax_header.read())
+    _d1_df = _read(await d1_legs.read())    # accepted for parity; not used in output (yet)
+    edi_df = _read(await edi214.read())
 
-        # 940 join: PickRoute vs __b2b_key
-        cost_tmp = cost[[cost_pick] + ([cost_hdr_status] if cost_hdr_status else []) + ([cost_doc_status] if cost_doc_status else [])].copy()
-        cost_tmp["__940_key"] = cost_tmp[cost_pick].astype(str).str.strip().str.lower()
+    # ---- required EDI cols (fail loud if truly missing)
+    req_edi = [
+        "PurchaseOrderNumber", "TimeIssueOccurred", "AXCompany", "TradingPartnerCode",
+        "EDILocationID1", "DocumentType", "StatusSummary", "SalesOrderNumber1",
+        "ShipmentID", "AXReferenceID", "ERRORDESCRIPTION"
+    ]
+    missing_edi = [c for c in req_edi if c not in edi_df.columns]
+    if missing_edi:
+        raise HTTPException(status_code=400, detail=f"Missing in EDI 214 file: {missing_edi}. Available: {list(edi_df.columns)}")
 
-        # LEFT joins to keep all NO_SONUM rows
-        merged = b2b_no_sonum.merge(dhl_tmp, left_on="__b2b_key", right_on="__dhl_key", how="left")
-        merged = merged.merge(cost_tmp, left_on="__b2b_key", right_on="__940_key", how="left")
+    # ---- set up filters (case-insensitive)
+    def _norm_col(s: pd.Series) -> pd.Series:
+        return s.fillna("").astype(str).str.strip().str.upper()
 
-        # Reason classification helpers
-        def classify_reason(row: pd.Series) -> tuple[str, str]:
-            """
-            Returns: (ReasonCategory, ReasonDetail)
-            """
-            # Found DHL scan?
-            has_dhl = pd.notna(row.get("__dhl_key"))
-            # Found 940/AX record?
-            has_940 = pd.notna(row.get("__940_key"))
+    edi = edi_df.copy()
+    edi["__DOC"]  = _norm_col(edi["DocumentType"])
+    edi["__SON"]  = _norm_col(edi["SalesOrderNumber1"])
+    edi["__STAT"] = _norm_col(edi["StatusSummary"])
 
-            status = str(row.get(b2b_status, "")).lower() if b2b_status else ""
-            err = str(row.get(b2b_err, "")).lower() if b2b_err else ""
-            ax_hdr = str(row.get(cost_hdr_status, "")).lower() if cost_hdr_status else ""
-            ax_doc = str(row.get(cost_doc_status, "")).lower() if cost_doc_status else ""
+    no_so_markers = {"NO_SO_AVAILABLE", "NO_SO", "NO_SO_NUM", "NO_SONUM"}
+    mask = (edi["__DOC"] == "214") & ( (edi["__SON"] == "NO_SONUM") | (edi["__STAT"].isin(no_so_markers)) )
 
-            # 1) No DHL record -> likely never shipped
-            if not has_dhl:
-                return ("3PL never shipped", "No DHL shipment scan found for this Pickticket/AXReferenceID")
+    edi_filtered = edi.loc[mask].copy()
 
-            # If DHL exists:
-            # Check B2Bi status/error hints to separate transmission vs TSI/AX failures
-            tsi_markers = ("tsi", "ax load failure", "mapping", "transform", "translate", "application error")
-            tx_markers = ("transmission", "not received", "no file", "timeout", "network", "retry")
+    # If no rows match, still return a proper (empty) file with headers
+    out_cols = [
+        "PurchaseOrderNumber", "TimeIssueOccurred", "AXCompany", "TradingPartnerCode",
+        "EDILocationID1", "DocumentType", "StatusSummary", "SalesOrderNumber1",
+        "ShipmentID", "Sales Order Number", "AXReferenceID", "AX Pick Status",
+        "AX SO Header Status", "ERRORDESCRIPTION"
+    ]
+    if edi_filtered.empty:
+        data = df_to_xlsx_bytes(pd.DataFrame(columns=out_cols))
+        stamp = datetime.datetime.now().strftime("%m%d%y")
+        filename = f"NO_SONUM_{stamp}.xlsx"
+        return StreamingResponse(io.BytesIO(data),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'}
+        )
 
-            if any(m in status or m in err for m in tsi_markers):
-                return ("File failed in TSI EDI", f"B2Bi indicates failure in TSI/AX pipeline (status='{row.get(b2b_status, '')}', err='{row.get(b2b_err, '')}')")
+    # ---- optional AX enrichment (will be blank for NO_SONUM)
+    ax_cols_present = {c for c in ax_df.columns}
+    has_salesid = "SalesId" in ax_cols_present
+    if has_salesid:
+        ax_slim = ax_df[["SalesId"] + [c for c in ["SalesHeaderStatus", "SalesHeaderDocStatus"] if c in ax_df.columns]].copy()
+        ax_slim["SalesId"] = ax_slim["SalesId"].astype(str).str.strip()
+        edi_filtered["SalesOrderNumber1"] = edi_filtered["SalesOrderNumber1"].astype(str).str.strip()
+        merged = pd.merge(
+            edi_filtered,
+            ax_slim,
+            how="left",
+            left_on="SalesOrderNumber1",
+            right_on="SalesId",
+        )
+    else:
+        merged = edi_filtered.copy()
+        merged["SalesId"] = pd.NA
+        if "SalesHeaderStatus" not in merged.columns:
+            merged["SalesHeaderStatus"] = pd.NA
+        if "SalesHeaderDocStatus" not in merged.columns:
+            merged["SalesHeaderDocStatus"] = pd.NA
 
-            if any(m in status or m in err for m in tx_markers):
-                return ("3PL sent 945 but transmission failed", f"Transmission-related issue detected in B2Bi (status='{row.get(b2b_status, '')}', err='{row.get(b2b_err, '')}')")
+    # ---- prefer rows that have an ERRORDESCRIPTION, then dedupe on a stable key
+    merged["__has_err"] = merged["ERRORDESCRIPTION"].notna() & (merged["ERRORDESCRIPTION"].astype(str).str.strip() != "")
+    # sort so True comes first
+    merged = merged.sort_values(by="__has_err", ascending=False)
 
-            # If AX doc status hints it's not ship-confirmed yet (still picking/packing)
-            if ax_doc and ax_doc in ("picking list", "pickinglist", "picking_list"):
-                return ("3PL shipped but AX not ship-confirmed", "AX document status indicates Picking List – posting not completed")
+    # choose dedupe keys that exist (cover your example)
+    dedupe_keys = [k for k in ["PurchaseOrderNumber", "AXReferenceID", "ShipmentID"] if k in merged.columns]
+    if dedupe_keys:
+        merged = merged.drop_duplicates(subset=dedupe_keys, keep="first")
 
-            # Fallback: treat as missing/unknown 945 transmission
-            return ("3PL shipped but did not send 945 or transmission failed", "DHL shows shipped; B2Bi has NO_SONUM without clear TSI error")
+    # ---- build final output (exact names/order)
+    out_df = pd.DataFrame({
+        "PurchaseOrderNumber": merged.get("PurchaseOrderNumber"),
+        "TimeIssueOccurred": merged.get("TimeIssueOccurred"),
+        "AXCompany": merged.get("AXCompany"),
+        "TradingPartnerCode": merged.get("TradingPartnerCode"),
+        "EDILocationID1": merged.get("EDILocationID1"),
+        "DocumentType": merged.get("DocumentType"),
+        "StatusSummary": merged.get("StatusSummary"),
+        "SalesOrderNumber1": merged.get("SalesOrderNumber1"),       # should be "NO_SONUM"
+        "ShipmentID": merged.get("ShipmentID"),
+        "Sales Order Number": merged.get("SalesId"),                # blank for NO_SONUM rows
+        "AXReferenceID": merged.get("AXReferenceID"),
+        "AX Pick Status": merged.get("SalesHeaderDocStatus"),
+        "AX SO Header Status": merged.get("SalesHeaderStatus"),
+        "ERRORDESCRIPTION": merged.get("ERRORDESCRIPTION"),
+    })[out_cols]
 
-        reasons = merged.apply(classify_reason, axis=1)
-        merged["ReasonCategory"] = reasons.map(lambda t: t[0])
-        merged["ReasonDetail"] = reasons.map(lambda t: t[1])
+    # ---- export
+    data = df_to_xlsx_bytes(out_df)
+    stamp = datetime.datetime.now().strftime("%m%d%y")
+    filename = f"NO_SONUM_{stamp}.xlsx"
 
-        # Output view
-        out_cols = [
-            (b2b_axref or "AXReferenceID"),
-            (b2b_shipid or "ShipmentID"),
-            (b2b_status or "StatusSummary"),
-            (b2b_err or "ERRORDESCRIPTION"),
-            dhl_pick,        # DHL Pickticket if found
-            cost_pick,       # AX PickRoute if found
-        ]
-        if cost_hdr_status: out_cols.append(cost_hdr_status)
-        if cost_doc_status: out_cols.append(cost_doc_status)
-        out_cols += ["ReasonCategory", "ReasonDetail"]
-
-        # Ensure columns exist in frame, fill missing if needed
-        for c in out_cols:
-            if c not in merged.columns:
-                merged[c] = np.nan
-
-        out = merged[out_cols].drop_duplicates().reset_index(drop=True)
-
-        # Summary
-        total_b2bi = int(len(b2b))
-        total_no_sonum = int(len(b2b_no_sonum))
-        matched_to_dhl = int(merged["__dhl_key"].notna().sum())
-        matched_to_940 = int(merged["__940_key"].notna().sum())
-        reason_never_shipped = int((out["ReasonCategory"] == "3PL never shipped").sum())
-        reason_failed_tsi = int((out["ReasonCategory"] == "File failed in TSI EDI").sum())
-        reason_no_945_or_txn_fail = int((out["ReasonCategory"] == "3PL shipped but did not send 945 or transmission failed").sum() +
-                                        (out["ReasonCategory"] == "3PL sent 945 but transmission failed").sum() +
-                                        (out["ReasonCategory"] == "3PL shipped but AX not ship-confirmed").sum())
-
-        # Excel
-        xlsx_bytes = df_to_xlsx_bytes(out, sheet_name="NO_SONUM")
-        xlsx_b64 = base64.b64encode(xlsx_bytes).decode("ascii")
-        filename = f"NO_SONUM_{datetime.datetime.now().date().isoformat()}.xlsx"
-
-        return {
-            "summary": {
-                "total_b2bi_rows": total_b2bi,
-                "no_sonum_rows": total_no_sonum,
-                "matched_to_dhl": matched_to_dhl,
-                "matched_to_940": matched_to_940,
-                "reason_never_shipped": reason_never_shipped,
-                "reason_no_945_or_txn_fail": reason_no_945_or_txn_fail,
-                "reason_failed_tsi": reason_failed_tsi,
-            },
-            "rows": df_records_safe(out, limit=limit),
-            "xlsx_b64": xlsx_b64,
-            "filename": filename,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"NO_SONUM detection failed: {e}")
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'}
+    )
