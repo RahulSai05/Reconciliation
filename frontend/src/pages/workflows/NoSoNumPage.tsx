@@ -218,7 +218,7 @@ export default function NoSoNumPage() {
           />
           <FileUploader
             label="TPX_-_AX_D1_Report"
-            hint="D1 / Legs CSV (accepted for parity; not used in output)"
+            hint="TPX_-_AX_D1_Report"
             file={d1LegsFile}
             onChange={setD1LegsFile}
           />
